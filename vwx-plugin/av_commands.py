@@ -38,6 +38,7 @@ except NameError:
 AV_REC_DEVICE  = 'AV Device'
 AV_REC_RIGGING = 'AV Rigging Point'
 AV_REC_CABLE   = 'AV Cable'
+AV_REC_SEAT    = 'AV Seat'         # theater/corporate seat assignment record
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,9 +46,25 @@ AV_REC_CABLE   = 'AV Cable'
 # ─────────────────────────────────────────────────────────────────────────────
 
 _AV_LAYERS = [
-    'AV-Room', 'AV-Stage', 'AV-Rigging',
-    'AV-Audio', 'AV-Video', 'AV-Power', 'AV-Signal',
-    'AV-Seating', 'AV-FOH', 'AV-Dims', 'AV-Notes',
+    # Venue shell
+    'AV-Room',        # room boundary
+    'AV-Stage',       # stage platform / risers
+    # Technical systems
+    'AV-Rigging',     # truss, motors, fly points
+    'AV-Lighting',    # lighting positions (Spotlight-compatible layer name)
+    'AV-Audio',       # speakers, subs, monitors
+    'AV-Video',       # screens, LED walls, projectors, confidence monitors
+    'AV-Power',       # power distribution
+    'AV-Signal',      # cable runs
+    # Event layout
+    'AV-Seating',     # audience tables and chairs
+    'AV-Head-Table',  # corporate head table / dais / panel table
+    'AV-FOH',         # mix positions, production desks
+    'AV-Cameras',     # camera positions (broadcast, streaming, recording)
+    'AV-ADA',         # accessible seating positions
+    # Documentation
+    'AV-Dims',
+    'AV-Notes',
 ]
 
 # (fill_rgb, pen_rgb, lw_hundredths_mm)
@@ -70,7 +87,16 @@ _AV_CLASSES = {
     'AV-FOH':           ((80, 180,  80),( 40,130,  40),   35),
     'AV-Dims':          ((  0,  0,   0),(  0,  0,   0),   18),
     'AV-Notes':         (( 40, 40,  40),( 20, 20,  20),   13),
-    'AV-Coverage':      (( 50,150, 255),( 20,100, 200),   13),
+    'AV-Coverage':      (( 50, 150, 255), ( 20, 100, 200),  13),
+    # Corporate / Spotlight additions
+    'AV-Podium':        ((200, 200, 200), (100, 100, 100),  35),
+    'AV-Camera':        (( 30,  30,  30), (  0,   0,   0),  50),
+    'AV-Confidence-Mon':((200,  30,  80), (160,   0,  50),  35),
+    'AV-Head-Table':    ((240, 220, 175), (120,  95,  45),  35),
+    'AV-Theater-Chair': ((200, 200, 215), ( 90,  90, 110),  13),
+    'AV-ADA':           (( 40, 175,  80), ( 15, 135,  50),  25),
+    'AV-Registration':  (( 90, 190, 235), ( 40, 140, 190),  35),
+    'AV-Cocktail-Table':((235, 215, 195), (125, 110,  90),  25),
 }
 
 
@@ -173,6 +199,10 @@ def av_setup_document(p):
             ('Cable_Type', 'audio', 4), ('Length_mm', '0', 1),
             ('From_Device', '', 4), ('To_Device', '', 4),
             ('Connector_A', '', 4), ('Connector_B', '', 4), ('Notes', '', 4),
+        ]),
+        (AV_REC_SEAT, [
+            ('Row', '', 4), ('Seat_Num', '0', 1), ('Section', 'General', 4),
+            ('ADA', 'No', 4), ('Status', 'Available', 4), ('Assignment', '', 4),
         ]),
     ]:
         try:
@@ -1054,3 +1084,692 @@ def av_rigging_summary(p):
         'warnings': sum(1 for pt in points if pt['warning']),
         'points': points,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Corporate / Spotlight: staging elements
+# ─────────────────────────────────────────────────────────────────────────────
+
+def av_place_podium(p):
+    """Place a corporate podium / lectern on stage.
+
+    cx, cy            : center position (mm).
+    width_mm          : podium width (default 610 = 24 in).
+    depth_mm          : podium depth (default 460 = 18 in).
+    label             : 'PODIUM' | 'LECTERN' | presenter name.
+    confidence_monitor: draw a confidence monitor marker downstage of podium (default True).
+    monitor_width_mm  : confidence monitor screen width (default 686 = 27 in diag ≈ 24 in wide).
+
+    Returns object_ids and center position."""
+    prev = _with_layer_class({'layer': 'AV-Stage', 'class': 'AV-Podium'})
+    try:
+        cx  = float(p.get('cx', 0))
+        cy  = float(p.get('cy', 0))
+        pw  = float(p.get('width_mm', 610))
+        pd  = float(p.get('depth_mm', 460))
+        lbl = str(p.get('label', 'PODIUM'))
+        has_conf = bool(p.get('confidence_monitor', True))
+        mon_w    = float(p.get('monitor_width_mm', 686))
+
+        vs.Rect((cx - pw/2, cy - pd/2), (cx + pw/2, cy + pd/2))
+        pod_h = vs.LNewObj()
+        if pod_h:
+            vs.SetFPat(pod_h, 4)   # light hatch
+            vs.SetFillFore(pod_h, (_c8(200), _c8(200), _c8(200)))
+            vs.SetFillBack(pod_h, (_c8(200), _c8(200), _c8(200)))
+            vs.SetLW(pod_h, 50)
+
+        lbl_h = _av_draw_text(cx, cy, lbl, size_mm=130)
+        ids = [_oid(h) for h in [pod_h, lbl_h] if h]
+
+        if has_conf:
+            mon_d = 50   # plan depth of monitor
+            mon_y = cy - pd/2 - 400 - mon_d  # downstage of podium
+            vs.NameClass('AV-Confidence-Mon')
+            vs.Rect((cx - mon_w/2, mon_y), (cx + mon_w/2, mon_y + mon_d))
+            mon_h = vs.LNewObj()
+            if mon_h:
+                vs.SetFPat(mon_h, 1)
+                vs.SetFillFore(mon_h, (_c8(200), _c8(30), _c8(80)))
+                vs.SetFillBack(mon_h, (_c8(200), _c8(30), _c8(80)))
+                ids.append(_oid(mon_h))
+            _av_draw_text(cx, mon_y - 200, 'CONF', size_mm=100)
+
+        _av_attach_record(pod_h, AV_REC_DEVICE, {
+            'Device_Type': 'Podium', 'Label': lbl,
+        })
+
+        return {'status': 'ok', 'object_ids': ids, 'center': {'x': cx, 'y': cy}}
+    finally:
+        _restore(prev)
+
+
+def av_place_head_table(p):
+    """Place a corporate head table / panel dais.
+
+    Chairs are placed on the downstage (audience-facing) side only.
+
+    cx, cy      : center of table (mm).
+    width_mm    : table width (default 4877 = 16 ft for 6-person panel).
+    depth_mm    : table depth (default 762 = 30 in standard banquet table).
+    n_seats     : panelists (default 6).
+    label       : 'HEAD TABLE' | 'PANEL' | 'DAIS'.
+    chair_w_mm  : chair width (default 480 mm).
+    chair_d_mm  : chair depth (default 400 mm)."""
+    prev = _with_layer_class({'layer': 'AV-Head-Table', 'class': 'AV-Head-Table'})
+    try:
+        cx  = float(p.get('cx', 0))
+        cy  = float(p.get('cy', 0))
+        tw  = float(p.get('width_mm', 4877))
+        td  = float(p.get('depth_mm', 762))
+        n   = int(p.get('n_seats', 6))
+        lbl = str(p.get('label', 'HEAD TABLE'))
+        cw  = float(p.get('chair_w_mm', 480))
+        cd  = float(p.get('chair_d_mm', 400))
+
+        vs.Rect((cx - tw/2, cy - td/2), (cx + tw/2, cy + td/2))
+        tbl_h = vs.LNewObj()
+        if tbl_h:
+            vs.SetFPat(tbl_h, 1)
+            vs.SetFillFore(tbl_h, (_c8(240), _c8(220), _c8(175)))
+            vs.SetFillBack(tbl_h, (_c8(240), _c8(220), _c8(175)))
+            vs.SetLW(tbl_h, 50)
+
+        ids = [_oid(tbl_h)] if tbl_h else []
+
+        # Chairs on the downstage (south/audience) side
+        gap = (tw - n * cw) / (n + 1)
+        vs.NameClass('AV-Seating-Chair')
+        for i in range(n):
+            cx_i = cx - tw/2 + gap + i * (cw + gap) + cw/2
+            cy_i = cy - td/2 - 80 - cd/2   # 80 mm clearance from table edge
+            vs.Rect((cx_i - cw/2, cy_i - cd/2), (cx_i + cw/2, cy_i + cd/2))
+            ch = vs.LNewObj()
+            if ch:
+                vs.SetFPat(ch, 1)
+                vs.SetFillFore(ch, (_c8(200), _c8(200), _c8(200)))
+                vs.SetFillBack(ch, (_c8(200), _c8(200), _c8(200)))
+                vs.SetLW(ch, 18)
+                ids.append(_oid(ch))
+
+        lbl_h = _av_draw_text(cx, cy, f'{lbl}\n({n} seats)', size_mm=160)
+        if lbl_h: ids.append(_oid(lbl_h))
+
+        _av_attach_record(tbl_h, AV_REC_DEVICE, {
+            'Device_Type': 'Head Table', 'Label': lbl,
+        }) if tbl_h else None
+
+        return {
+            'status': 'ok', 'object_ids': ids,
+            'n_seats': n, 'center': {'x': cx, 'y': cy},
+            'bounds': {'x1': cx-tw/2, 'y1': cy-td/2, 'x2': cx+tw/2, 'y2': cy+td/2},
+        }
+    finally:
+        _restore(prev)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Corporate / Spotlight: seating layouts
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ROW_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'   # skip I and O (visual confusion)
+
+
+def av_layout_theater_seating(p):
+    """Auto-layout theater-style rows of numbered seats.
+
+    Rows grow from stage-end toward back of room (+Y → -Y in VW convention).
+
+    x1,y1,x2,y2       : section boundary (mm).
+    seat_width_mm      : per-seat width centre-to-centre (default 508 = 20 in).
+    seat_depth_mm      : seat front-to-back (default 305 mm).
+    row_spacing_mm     : row pitch centre-to-centre (default 914 = 36 in).
+    row_label_style    : 'alpha' (A, B, C … skip I/O) | 'numeric' (1, 2, 3).
+    aisle_after_cols   : list of column numbers after which to insert a centre aisle,
+                         e.g. [8] for a single centre aisle after col 8.
+    aisle_width_mm     : aisle width (default 1219 = 48 in).
+    ada_at_row_ends    : True = mark end seats on every row as ADA (default False).
+    section_label      : zone label written into the AV Seat record (default 'General').
+
+    Returns rows, total_seats, and per-row breakdown."""
+    x1 = float(p.get('x1', -9000)); y1 = float(p.get('y1', -9000))
+    x2 = float(p.get('x2',  9000)); y2 = float(p.get('y2',  3000))
+    seat_w   = float(p.get('seat_width_mm',  508))
+    seat_d   = float(p.get('seat_depth_mm',  305))
+    row_sp   = float(p.get('row_spacing_mm', 914))
+    style    = str(p.get('row_label_style', 'alpha'))
+    aisle_after = [int(v) for v in p.get('aisle_after_cols', [])]
+    aisle_w  = float(p.get('aisle_width_mm', 1219))
+    ada_ends = bool(p.get('ada_at_row_ends', False))
+    section  = str(p.get('section_label', 'General'))
+
+    sec_w = x2 - x1
+    n_aisles = len(aisle_after)
+    usable_w = sec_w - n_aisles * aisle_w
+    n_cols   = max(1, int(usable_w / seat_w))
+    n_rows   = max(1, int((abs(y2 - y1) - seat_d) / row_sp) + 1)
+
+    # Grid starts at row nearest stage (largest Y value in the boundary)
+    # and grows toward y1 (further from stage).
+    stage_end_y = max(y1, y2)
+    back_end_y  = min(y1, y2)
+
+    # Centre the grid horizontally
+    total_grid_w = n_cols * seat_w + n_aisles * aisle_w
+    start_x      = (x1 + x2) / 2 - total_grid_w / 2
+
+    def _row_label(i):
+        if style == 'alpha':
+            return _ROW_LETTERS[i % len(_ROW_LETTERS)]
+        return str(i + 1)
+
+    prev = _with_layer_class({'layer': 'AV-Seating', 'class': 'AV-Theater-Chair'})
+    rows_data = []
+    total_seats = 0
+
+    try:
+        for row_idx in range(n_rows):
+            # Rows numbered from stage outward: row 0 = closest to stage
+            row_y = stage_end_y - row_sp/2 - row_idx * row_sp
+            if row_y - seat_d/2 < back_end_y:
+                break
+
+            rl   = _row_label(row_idx)
+            cur_x = start_x
+            col_idx = 0
+            seat_num = 1
+            aisle_set = set(aisle_after)
+            seats_in_row = 0
+
+            while col_idx < n_cols:
+                is_ada = ada_ends and (col_idx == 0 or col_idx == n_cols - 1)
+                sx = cur_x + seat_w / 2
+
+                if is_ada:
+                    vs.NameClass('AV-ADA')
+                else:
+                    vs.NameClass('AV-Theater-Chair')
+
+                # Seat rectangle with 25 mm gap each side
+                vs.Rect((sx - seat_w/2 + 25, row_y - seat_d/2),
+                        (sx + seat_w/2 - 25, row_y + seat_d/2))
+                sh = vs.LNewObj()
+                if sh:
+                    rgb = (40, 175, 80) if is_ada else (200, 200, 215)
+                    vs.SetFPat(sh, 1)
+                    vs.SetFillFore(sh, (_c8(rgb[0]), _c8(rgb[1]), _c8(rgb[2])))
+                    vs.SetFillBack(sh, (_c8(rgb[0]), _c8(rgb[1]), _c8(rgb[2])))
+                    vs.SetLW(sh, 13)
+                    _av_attach_record(sh, AV_REC_SEAT, {
+                        'Row': rl, 'Seat_Num': seat_num, 'Section': section,
+                        'ADA': 'Yes' if is_ada else 'No',
+                    })
+
+                cur_x += seat_w
+                seat_num += 1
+                col_idx += 1
+                seats_in_row += 1
+
+                # Insert aisle gap
+                if col_idx in aisle_set:
+                    cur_x += aisle_w
+
+            # Row label at left of row
+            vs.NameClass('AV-Notes')
+            _av_draw_text(start_x - 400, row_y, rl, size_mm=175, align='center')
+            vs.NameClass('AV-Theater-Chair')
+
+            total_seats += seats_in_row
+            rows_data.append({'row': rl, 'seats': seats_in_row,
+                               'y_mm': round(row_y, 0)})
+    finally:
+        _restore(prev)
+
+    return {
+        'status': 'ok',
+        'rows': len(rows_data),
+        'cols': n_cols,
+        'total_seats': total_seats,
+        'row_detail': rows_data,
+    }
+
+
+def av_layout_classroom(p):
+    """Auto-layout classroom-style rows of rectangular tables with chairs.
+
+    Tables face the stage.  Chairs sit on the downstage side of each table.
+
+    x1,y1,x2,y2         : section boundary (mm).
+    table_width_mm       : per-seat unit width (default 762 = 30 in per seat).
+    table_depth_mm       : table front-to-back (default 610 = 24 in).
+    seats_per_table_unit : chairs per 762 mm table unit (default 1).
+    row_spacing_mm       : row pitch (default 1829 = 72 in, table + chair + clearance).
+    table_units_per_row  : number of 762 mm table units per row (auto-computed if 0).
+    center_aisle_mm      : centre aisle width (default 0).
+    start_table_num      : first table number (default 1).
+
+    Returns rows_placed, total_seats."""
+    x1  = float(p.get('x1', -9000)); y1 = float(p.get('y1', -9000))
+    x2  = float(p.get('x2',  9000)); y2 = float(p.get('y2',  3000))
+    tw  = float(p.get('table_width_mm',   762))   # per unit
+    td  = float(p.get('table_depth_mm',   610))
+    sptu = int(p.get('seats_per_table_unit', 1))
+    row_sp = float(p.get('row_spacing_mm', 1829))
+    n_units = int(p.get('table_units_per_row', 0))
+    c_aisle = float(p.get('center_aisle_mm', 0))
+    tnum    = int(p.get('start_table_num', 1))
+
+    sec_w = x2 - x1
+    if n_units == 0:
+        n_units = max(1, int((sec_w - c_aisle) / tw))
+
+    stage_end_y = max(y1, y2)
+    back_end_y  = min(y1, y2)
+    n_rows = max(1, int((abs(y2 - y1) - td) / row_sp) + 1)
+
+    left_block  = n_units // 2
+    right_block = n_units - left_block
+    left_w  = left_block  * tw
+    right_w = right_block * tw
+    total_w = left_w + right_w + c_aisle
+
+    lx1 = (x1 + x2) / 2 - total_w / 2
+    rx1 = lx1 + left_w + c_aisle
+
+    chair_w = tw * 0.85
+    chair_d = 400
+    chair_gap = 60   # gap between chair back and table edge
+
+    prev = _with_layer_class({'layer': 'AV-Seating', 'class': 'AV-Seating-Table'})
+    rows_data = []
+    total_seats = 0
+
+    try:
+        for row_idx in range(n_rows):
+            row_y = stage_end_y - td/2 - row_idx * row_sp
+            if row_y - td/2 < back_end_y:
+                break
+
+            seats_in_row = 0
+
+            for block_x, n_blk in [(lx1, left_block), (rx1, right_block)]:
+                for unit_i in range(n_blk):
+                    ux = block_x + unit_i * tw
+                    vs.Rect((ux, row_y - td/2), (ux + tw, row_y + td/2))
+                    tbl_h = vs.LNewObj()
+                    if tbl_h:
+                        vs.SetFPat(tbl_h, 1)
+                        vs.SetFillFore(tbl_h, (_c8(220), _c8(210), _c8(190)))
+                        vs.SetFillBack(tbl_h, (_c8(220), _c8(210), _c8(190)))
+                        vs.SetLW(tbl_h, 18)
+
+                    # Chair(s) on downstage side of this unit
+                    for s in range(sptu):
+                        cof = (s + 0.5) / sptu
+                        cx_c = ux + tw * cof
+                        cy_c = row_y - td/2 - chair_gap - chair_d/2
+                        vs.NameClass('AV-Seating-Chair')
+                        vs.Rect((cx_c - chair_w/(2*sptu), cy_c - chair_d/2),
+                                (cx_c + chair_w/(2*sptu), cy_c + chair_d/2))
+                        ch = vs.LNewObj()
+                        if ch:
+                            vs.SetFPat(ch, 1)
+                            vs.SetFillFore(ch, (_c8(180), _c8(180), _c8(180)))
+                            vs.SetFillBack(ch, (_c8(180), _c8(180), _c8(180)))
+                            vs.SetLW(ch, 13)
+                        vs.NameClass('AV-Seating-Table')
+                        seats_in_row += 1
+
+            total_seats += seats_in_row
+            rows_data.append({'row': row_idx + 1, 'seats': seats_in_row,
+                               'y_mm': round(row_y, 0)})
+            tnum += 1
+    finally:
+        _restore(prev)
+
+    return {
+        'status': 'ok',
+        'rows': len(rows_data),
+        'total_seats': total_seats,
+        'row_detail': rows_data,
+    }
+
+
+def av_layout_cocktail_tables(p):
+    """Auto-layout cocktail / high-top reception tables in a grid.
+
+    x1,y1,x2,y2      : section boundary (mm).
+    diameter_mm       : table top diameter (default 686 = 27 in high top).
+    col_spacing_mm    : centre-to-centre column pitch (default 2134 = 7 ft).
+    row_spacing_mm    : centre-to-centre row pitch (default 2134 = 7 ft).
+    n_stools          : bar stools per table (0 = standing only, default 3).
+    start_table_num   : first table number (default 1).
+
+    Returns tables_placed, total_capacity."""
+    x1  = float(p.get('x1', -9000)); y1 = float(p.get('y1', -9000))
+    x2  = float(p.get('x2',  9000)); y2 = float(p.get('y2',  3000))
+    dia    = float(p.get('diameter_mm',   686))
+    col_sp = float(p.get('col_spacing_mm', 2134))
+    row_sp = float(p.get('row_spacing_mm', 2134))
+    n_st   = int(p.get('n_stools', 3))
+    tnum   = int(p.get('start_table_num', 1))
+
+    sec_w = x2 - x1;  sec_l = abs(y2 - y1)
+    n_cols = max(1, int((sec_w - dia) / col_sp) + 1)
+    n_rows = max(1, int((sec_l - dia) / row_sp) + 1)
+    total_w = (n_cols - 1) * col_sp
+    total_l = (n_rows - 1) * row_sp
+    sx = (x1 + x2)/2 - total_w/2
+    sy_start = (min(y1,y2) + max(y1,y2))/2 - total_l/2
+
+    prev = _with_layer_class({'layer': 'AV-Seating', 'class': 'AV-Cocktail-Table'})
+    tables = []
+
+    try:
+        for ri in range(n_rows):
+            for ci in range(n_cols):
+                tx = sx + ci * col_sp
+                ty = sy_start + ri * row_sp
+                if tx - dia/2 < x1 or tx + dia/2 > x2: continue
+                if ty - dia/2 < min(y1,y2) or ty + dia/2 > max(y1,y2): continue
+
+                vs.ArcByCenter((tx, ty), dia/2, 0, 360)
+                th = vs.LNewObj()
+                if th:
+                    vs.SetFPat(th, 1)
+                    vs.SetFillFore(th, (_c8(235), _c8(215), _c8(195)))
+                    vs.SetFillBack(th, (_c8(235), _c8(215), _c8(195)))
+                    vs.SetLW(th, 25)
+
+                # Bar stools
+                if n_st > 0:
+                    stool_r = 170
+                    setback = dia/2 + 60
+                    vs.NameClass('AV-Seating-Chair')
+                    for s in range(n_st):
+                        a = 2 * _math.pi * s / n_st
+                        sx_s = tx + setback * _math.cos(a)
+                        sy_s = ty + setback * _math.sin(a)
+                        vs.ArcByCenter((sx_s, sy_s), stool_r, 0, 360)
+                        st = vs.LNewObj()
+                        if st:
+                            vs.SetFPat(st, 1)
+                            vs.SetFillFore(st, (_c8(200), _c8(200), _c8(210)))
+                            vs.SetLW(st, 13)
+                    vs.NameClass('AV-Cocktail-Table')
+
+                _av_draw_text(tx, ty, str(tnum), size_mm=100)
+                tables.append({'number': tnum, 'x': tx, 'y': ty})
+                tnum += 1
+    finally:
+        _restore(prev)
+
+    cap = len(tables) * max(n_st, 3)   # estimate 3 pax standing if no stools
+    return {
+        'status': 'ok',
+        'tables_placed': len(tables),
+        'capacity_estimate': cap,
+        'tables': tables,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Corporate / Spotlight: AV positions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def av_place_camera_position(p):
+    """Mark a camera position in plan view.
+
+    cx, cy       : position (mm).
+    label        : 'CAM-1' | 'BROADCAST' | 'STREAMING' | 'RECORD'.
+    camera_type  : 'broadcast' | 'handheld' | 'ptz' | 'jib' | 'streaming'.
+    aim_deg      : direction camera faces (270 = toward stage/-Y, default).
+
+    Draws a filled triangle (footprint) pointing toward the aim direction and a
+    circle for the operator zone.  PTZ draws a circle only (no operator)."""
+    prev = _with_layer_class({'layer': 'AV-Cameras', 'class': 'AV-Camera'})
+    try:
+        cx   = float(p.get('cx', 0))
+        cy   = float(p.get('cy', 0))
+        lbl  = str(p.get('label', 'CAM'))
+        ctype = str(p.get('camera_type', 'broadcast')).lower()
+        aim  = float(p.get('aim_deg', 270))
+
+        ids = []
+        aim_r = _math.radians(aim)
+
+        if ctype == 'ptz':
+            # PTZ: just a small filled circle on a wall/ceiling
+            vs.ArcByCenter((cx, cy), 250, 0, 360)
+            h = vs.LNewObj()
+            if h:
+                vs.SetFPat(h, 1)
+                vs.SetFillFore(h, (_c8(30), _c8(30), _c8(30)))
+                ids.append(_oid(h))
+        else:
+            # Operator zone circle
+            zone_r = 750   # 1.5 m diameter working zone
+            vs.ArcByCenter((cx, cy), zone_r, 0, 360)
+            zone_h = vs.LNewObj()
+            if zone_h:
+                vs.SetFPat(zone_h, 0); vs.SetLW(zone_h, 18)
+                try: vs.SetLSN(zone_h, 3)   # dashed
+                except Exception: pass
+            if zone_h: ids.append(_oid(zone_h))
+
+            # Camera direction triangle (pointing toward aim)
+            tip_d = 400    # triangle tip distance from cx,cy
+            base_w = 350   # half-width at base
+            perp_r = aim_r + _math.pi/2
+            tip  = (cx + tip_d * _math.cos(aim_r), cy + tip_d * _math.sin(aim_r))
+            bl   = (cx + base_w * _math.cos(perp_r), cy + base_w * _math.sin(perp_r))
+            br   = (cx - base_w * _math.cos(perp_r), cy - base_w * _math.sin(perp_r))
+            vs.ClosePoly(); vs.BeginPoly()
+            for pt in [tip, bl, br, tip]:
+                vs.Add2DVertex((pt[0], pt[1]), 0, 0)
+            vs.EndPoly()
+            tri_h = vs.LNewObj()
+            if tri_h:
+                vs.SetFPat(tri_h, 1)
+                vs.SetFillFore(tri_h, (_c8(30), _c8(30), _c8(30)))
+                vs.SetFillBack(tri_h, (_c8(30), _c8(30), _c8(30)))
+                vs.SetLW(tri_h, 25)
+                ids.append(_oid(tri_h))
+
+        lbl_h = _av_draw_text(cx, cy - zone_r - 350 if ctype != 'ptz' else cy - 400,
+                               lbl, size_mm=150)
+        if lbl_h: ids.append(_oid(lbl_h))
+
+        _av_attach_record(ids[0] if ids else None, AV_REC_DEVICE, {
+            'Device_Type': f'Camera-{ctype}', 'Label': lbl,
+        }) if ids else None
+
+        return {'status': 'ok', 'object_ids': ids, 'position': {'x': cx, 'y': cy}}
+    finally:
+        _restore(prev)
+
+
+def av_place_confidence_monitor(p):
+    """Place a confidence monitor / stage monitor on stage floor in plan.
+
+    cx, cy       : center (mm).
+    width_mm     : screen width (default 1067 = 42 in diagonal ≈ 37 in wide).
+    depth_mm     : plan depth (default 50 mm — flat on floor or slim stand).
+    label        : 'CONF-1' | 'PROMPTER' | 'STAGE-MON'.
+    facing       : 'presenter' (default, monitor faces upstage toward presenter)
+                   | 'audience' (turned for audience-view / preview monitor).
+
+    Placed on AV-Video layer with AV-Confidence-Mon class."""
+    prev = _with_layer_class({'layer': 'AV-Video', 'class': 'AV-Confidence-Mon'})
+    try:
+        cx   = float(p.get('cx', 0))
+        cy   = float(p.get('cy', 0))
+        mw   = float(p.get('width_mm', 1067))
+        md   = float(p.get('depth_mm', 50))
+        lbl  = str(p.get('label', 'CONF'))
+
+        vs.Rect((cx - mw/2, cy - md/2), (cx + mw/2, cy + md/2))
+        h = vs.LNewObj()
+        if h:
+            vs.SetFPat(h, 1)
+            vs.SetFillFore(h, (_c8(200), _c8(30), _c8(80)))
+            vs.SetFillBack(h, (_c8(200), _c8(30), _c8(80)))
+            vs.SetLW(h, 35)
+
+        lbl_h = _av_draw_text(cx, cy + md/2 + 200, lbl, size_mm=120)
+        ids = [_oid(x) for x in [h, lbl_h] if x]
+
+        if h:
+            _av_attach_record(h, AV_REC_DEVICE, {
+                'Device_Type': 'Confidence Monitor', 'Label': lbl,
+                'Trim_mm': 0,
+            })
+
+        return {'status': 'ok', 'object_ids': ids, 'center': {'x': cx, 'y': cy}}
+    finally:
+        _restore(prev)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Corporate / Spotlight: ancillary elements
+# ─────────────────────────────────────────────────────────────────────────────
+
+def av_place_registration(p):
+    """Place a registration / check-in desk.
+
+    cx, cy        : center of desk footprint (mm).
+    width_mm      : desk width (default 3658 = 12 ft, space for 4 staff).
+    depth_mm      : desk depth (default 762 = 30 in).
+    n_staff_chairs: chairs on service (back) side (default 4).
+    label         : 'REGISTRATION' | 'CHECK-IN' | 'BADGE PICKUP'.
+    queue_depth_mm: if > 0, draws a dotted queue-management zone in front (default 2438)."""
+    prev = _with_layer_class({'layer': 'AV-FOH', 'class': 'AV-Registration'})
+    try:
+        cx   = float(p.get('cx', 0))
+        cy   = float(p.get('cy', 0))
+        dw   = float(p.get('width_mm',  3658))
+        dd   = float(p.get('depth_mm',   762))
+        n_ch = int(p.get('n_staff_chairs', 4))
+        lbl  = str(p.get('label', 'REGISTRATION'))
+        q_d  = float(p.get('queue_depth_mm', 2438))
+
+        ids = []
+
+        # Queue zone (dotted boundary in front of desk)
+        if q_d > 0:
+            vs.Rect((cx - dw/2, cy - dd/2 - q_d), (cx + dw/2, cy - dd/2))
+            qh = vs.LNewObj()
+            if qh:
+                vs.SetFPat(qh, 0); vs.SetLW(qh, 13)
+                try: vs.SetLSN(qh, 3)
+                except Exception: pass
+            if qh: ids.append(_oid(qh))
+
+        vs.Rect((cx - dw/2, cy - dd/2), (cx + dw/2, cy + dd/2))
+        dh = vs.LNewObj()
+        if dh:
+            vs.SetFPat(dh, 1)
+            vs.SetFillFore(dh, (_c8(90),  _c8(190), _c8(235)))
+            vs.SetFillBack(dh, (_c8(90),  _c8(190), _c8(235)))
+            vs.SetLW(dh, 35)
+        if dh: ids.append(_oid(dh))
+
+        # Staff chairs on back side
+        if n_ch > 0:
+            cw = min(480, dw / (n_ch + 1))
+            gap = (dw - n_ch * cw) / (n_ch + 1)
+            vs.NameClass('AV-Seating-Chair')
+            for i in range(n_ch):
+                cx_i = cx - dw/2 + gap + i * (cw + gap) + cw/2
+                cy_i = cy + dd/2 + 80 + 200   # behind desk
+                vs.ArcByCenter((cx_i, cy_i), 220, 0, 360)
+                ch = vs.LNewObj()
+                if ch:
+                    vs.SetFPat(ch, 1)
+                    vs.SetFillFore(ch, (_c8(180), _c8(180), _c8(180)))
+                    vs.SetLW(ch, 13)
+                    ids.append(_oid(ch))
+
+        lbl_h = _av_draw_text(cx, cy, lbl, size_mm=160)
+        if lbl_h: ids.append(_oid(lbl_h))
+
+        return {'status': 'ok', 'object_ids': ids, 'center': {'x': cx, 'y': cy}}
+    finally:
+        _restore(prev)
+
+
+def av_draw_seating_legend(p):
+    """Draw a seating capacity legend box on the AV-Notes layer.
+
+    cx, cy        : top-left corner of the box (mm).
+    event_name    : event title shown at top.
+    sections      : list of dicts, each with keys: label, tables (opt), seats.
+                    e.g. [{'label':'General','tables':20,'seats':200},
+                          {'label':'VIP','tables':5,'seats':50},
+                          {'label':'ADA','seats':10}]
+    box_width_mm  : legend box width (default 3000 mm).
+    row_height_mm : height per line (default 250 mm).
+
+    Returns object_ids of all legend elements."""
+    prev = _with_layer_class({'layer': 'AV-Notes', 'class': 'AV-Notes'})
+    try:
+        cx       = float(p.get('cx', -15000))
+        cy       = float(p.get('cy',  -5000))
+        ev_name  = str(p.get('event_name', 'EVENT'))
+        sections = p.get('sections', [])
+        box_w    = float(p.get('box_width_mm', 3000))
+        row_h    = float(p.get('row_height_mm', 300))
+
+        n_rows  = 2 + len(sections)   # title + header + section rows
+        box_h   = n_rows * row_h + 400
+
+        # Box outline
+        vs.Rect((cx, cy - box_h), (cx + box_w, cy))
+        bh = vs.LNewObj()
+        if bh:
+            vs.SetFPat(bh, 0); vs.SetLW(bh, 35)
+
+        ids = [_oid(bh)] if bh else []
+
+        # Title
+        lh = _av_draw_text(cx + box_w/2, cy - row_h/2,
+                            ev_name.upper(), size_mm=225, align='center')
+        if lh: ids.append(_oid(lh))
+
+        # Column headers
+        hdr = 'SECTION              TABLES    SEATS'
+        lh = _av_draw_text(cx + box_w/2, cy - row_h - row_h/2,
+                            hdr, size_mm=150, align='center')
+        if lh: ids.append(_oid(lh))
+
+        # Section rows
+        total_seats = 0
+        total_tables = 0
+        for i, sec in enumerate(sections):
+            row_y = cy - row_h * (i + 2) - row_h / 2
+            tbl_txt = str(sec.get('tables', '—'))
+            seat_txt = str(sec.get('seats', 0))
+            line = f"{sec.get('label',''):<20}  {tbl_txt:>6}    {seat_txt:>6}"
+            lh = _av_draw_text(cx + box_w/2, row_y,
+                                line, size_mm=150, align='center')
+            if lh: ids.append(_oid(lh))
+            total_seats  += int(sec.get('seats', 0))
+            total_tables += int(sec.get('tables', 0)) if 'tables' in sec else 0
+
+        # Total row
+        tot_y = cy - row_h * (len(sections) + 2) - row_h / 2 - 50
+        vs.MoveTo((cx, tot_y + row_h)); vs.LineTo((cx + box_w, tot_y + row_h))
+        lh_line = vs.LNewObj()
+        if lh_line: ids.append(_oid(lh_line))
+
+        tot_txt = f"{'TOTAL':<20}  {total_tables:>6}    {total_seats:>6}"
+        lh = _av_draw_text(cx + box_w/2, tot_y + row_h/2,
+                            tot_txt, size_mm=175, align='center')
+        if lh: ids.append(_oid(lh))
+
+        return {
+            'status': 'ok', 'object_ids': ids,
+            'total_seats': total_seats, 'total_tables': total_tables,
+        }
+    finally:
+        _restore(prev)

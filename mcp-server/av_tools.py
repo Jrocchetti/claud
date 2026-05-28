@@ -1,37 +1,56 @@
 """
-av_tools.py — AV Ballroom MCP Tool Wrappers
+av_tools.py — AV Corporate Event / Spotlight MCP Tool Wrappers
 
 Add to vwx_mcp_server.py with:
     from av_tools import register_av_tools
     register_av_tools(mcp, cmd)
 
-Or append this file's content directly after the existing tools.
+Vectorworks Spotlight notes:
+  - Layers are named AV-Lighting, AV-Seating, AV-Rigging, etc. to align with
+    Spotlight's event planning conventions.
+  - AV Seat records (Row, Seat_Num, Section, ADA, Status, Assignment) can be
+    queried from Spotlight's custom worksheet reports.
+  - For final client-facing seating maps, use Spotlight's native Seating Section
+    tool on top of / instead of the av_layout_* drawn geometry.
 
 Provides:
   Pure-math tools (no VW needed):
-    av_calc_throw           — projector throw geometry
-    av_calc_speaker_coverage — speaker coverage footprint
-    av_calc_sightline       — per-row sightline analysis
-    av_calc_seating_capacity — table layout capacity estimate
+    av_calc_throw              — projector throw geometry
+    av_calc_speaker_coverage   — speaker coverage footprint
+    av_calc_sightline          — per-row sightline analysis
+    av_calc_seating_capacity   — round-table layout capacity estimate
+    av_calc_theater_capacity   — theater-row seating capacity estimate
 
   VW-dispatching tools (require live VW session):
-    av_setup_document       — create AV layers / classes / records
-    av_draw_room            — room boundary rectangle
-    av_draw_stage           — stage platform with deck annotation
-    av_place_speaker        — single speaker / point source
-    av_place_speaker_cluster — line-array cluster with rigging marker
-    av_place_subwoofer      — sub stack
-    av_place_screen         — projection screen or LED wall
-    av_place_truss          — truss segment with rigging points
-    av_place_round_table    — single round table + chairs
-    av_layout_seating       — auto-layout full seating section
-    av_place_foh            — Front of House mix position
-    av_draw_cable_run       — labelled cable / signal run
-    av_place_power_distro   — power distribution unit
-    av_rigging_summary      — load summary from rigging records
+    av_setup_document          — create AV layers / classes / records
+    av_draw_room               — room boundary
+    av_draw_stage              — stage platform
+    av_place_speaker           — single speaker / point source
+    av_place_speaker_cluster   — line-array cluster
+    av_place_subwoofer         — sub stack
+    av_place_screen            — projection screen or LED wall
+    av_place_truss             — truss with rigging points
+    av_place_round_table       — single round table + chairs
+    av_layout_seating          — banquet round-table grid
+    av_place_foh               — Front of House mix position
+    av_draw_cable_run          — labelled cable / signal run
+    av_place_power_distro      — PDU / distro box
+    av_rigging_summary         — load summary from rigging records
+    — Corporate additions —
+    av_place_podium            — corporate podium / lectern + conf monitor
+    av_place_head_table        — panel / dais head table with chairs
+    av_layout_theater_seating  — theater rows with lettered/numbered seats + ADA
+    av_layout_classroom        — classroom-style table rows
+    av_place_camera_position   — broadcast / streaming camera marker
+    av_place_confidence_monitor— stage confidence monitor / prompter
+    av_layout_cocktail_tables  — reception high-top table grid
+    av_draw_seating_legend     — capacity legend box
+    av_place_registration      — registration / check-in desk
 
   Orchestration:
-    av_ballroom_layout      — full ballroom from a brief (one-shot)
+    av_ballroom_layout         — generic ballroom layout from a brief
+    av_corporate_event_layout  — corporate event by type:
+                                 'awards_gala' | 'keynote' | 'reception' | 'training'
 """
 
 import json
@@ -581,7 +600,286 @@ def _register(mcp):
         return _cmd('av_rigging_summary', {})
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Full-ballroom orchestration
+    # Pure-math: theater seating capacity
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @mcp.tool(structured_output=False)
+    def av_calc_theater_capacity(
+        ctx: Context,
+        room_width_mm: float,
+        room_length_mm: float,
+        stage_depth_mm: float = 4877,
+        foh_depth_mm: float = 2438,
+        seat_width_mm: float = 508,
+        seat_depth_mm: float = 305,
+        row_spacing_mm: float = 914,
+        n_aisles: int = 1,
+        aisle_width_mm: float = 1219,
+        side_clearance_mm: float = 1524,
+        front_clearance_mm: float = 3048,
+        back_clearance_mm: float = 1829,
+        ada_end_seats: bool = True,
+    ) -> str:
+        """Estimate theater-style seating capacity and provide layout parameters.
+
+        Returns: rows, seats per row, total seats, ADA count, and density.
+        Also calculates the last-row distance from stage for sightline planning.
+        All dimensions mm."""
+        avail_w = room_width_mm  - 2 * side_clearance_mm - n_aisles * aisle_width_mm
+        avail_l = room_length_mm - stage_depth_mm - front_clearance_mm \
+                                 - foh_depth_mm   - back_clearance_mm
+
+        if avail_w <= 0 or avail_l <= 0:
+            return json.dumps({'error': 'No space after constraints — check dimensions'})
+
+        n_cols = max(0, int(avail_w / seat_width_mm))
+        n_rows = max(0, int((avail_l - seat_depth_mm) / row_spacing_mm) + 1)
+        seats_per_row = n_cols
+        total_seats   = n_rows * seats_per_row
+
+        ada_per_row   = 2 if ada_end_seats else 0
+        ada_total     = n_rows * ada_per_row
+
+        last_row_dist = front_clearance_mm + (n_rows - 1) * row_spacing_mm
+        area_m2       = (room_width_mm / 1000) * (room_length_mm / 1000)
+        density       = total_seats / area_m2 if area_m2 else 0
+
+        recs = []
+        if seats_per_row > 30:
+            recs.append(f"Row width {seats_per_row} seats — add a centre aisle around col {seats_per_row//2}")
+        if row_spacing_mm < 864:
+            recs.append("Row spacing < 34 in — tight for egress; codes often require 32 in min")
+        if last_row_dist / room_length_mm > 0.85:
+            recs.append("Last row very far back — consider adding satellite screens or a balcony delay")
+        if density > 1.1:
+            recs.append(f"High density ({density:.2f}/m²) — verify fire egress calculations")
+
+        return json.dumps({
+            'room': {
+                'width_ft':  round(room_width_mm / 304.8, 0),
+                'length_ft': round(room_length_mm / 304.8, 0),
+            },
+            'capacity': {
+                'rows': n_rows,
+                'seats_per_row': seats_per_row,
+                'total_seats': total_seats,
+                'ada_seats': ada_total,
+            },
+            'geometry': {
+                'avail_width_ft':  round(avail_w / 304.8, 1),
+                'avail_length_ft': round(avail_l / 304.8, 1),
+                'last_row_from_stage_ft': round(last_row_dist / 304.8, 1),
+                'front_clearance_ft': round(front_clearance_mm / 304.8, 1),
+            },
+            'density': {
+                'seats_per_m2': round(density, 3),
+                'sqft_per_seat': round(107.64 / density, 1) if density else None,
+            },
+            'recommendations': recs,
+        }, indent=2)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Corporate VW-dispatch wrappers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @mcp.tool(structured_output=False)
+    def av_place_podium(
+        ctx: Context,
+        cx: float, cy: float,
+        label: str = 'PODIUM',
+        width_mm: float = 610,
+        depth_mm: float = 460,
+        confidence_monitor: bool = True,
+        monitor_width_mm: float = 686,
+    ) -> str:
+        """Place a corporate podium / lectern on the stage.
+        Draws the podium footprint and optionally a confidence monitor marker
+        on a stand downstage of the podium facing the presenter.
+        Placed on AV-Stage layer; monitor on AV-Video / AV-Confidence-Mon class."""
+        return _cmd('av_place_podium', {
+            'cx': cx, 'cy': cy, 'label': label,
+            'width_mm': width_mm, 'depth_mm': depth_mm,
+            'confidence_monitor': confidence_monitor,
+            'monitor_width_mm': monitor_width_mm,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_place_head_table(
+        ctx: Context,
+        cx: float, cy: float,
+        n_seats: int = 6,
+        width_mm: float = 4877,
+        depth_mm: float = 762,
+        label: str = 'HEAD TABLE',
+        chair_w_mm: float = 480,
+        chair_d_mm: float = 400,
+    ) -> str:
+        """Place a corporate head table / panel dais.
+        Chairs are drawn on the downstage (audience-facing) side only.
+        Placed on AV-Head-Table layer.
+
+        Common widths: 2438 = 8 ft (4-person) | 3658 = 12 ft (5-person) |
+                       4877 = 16 ft (6-person) | 6096 = 20 ft (8-person)."""
+        return _cmd('av_place_head_table', {
+            'cx': cx, 'cy': cy, 'n_seats': n_seats,
+            'width_mm': width_mm, 'depth_mm': depth_mm,
+            'label': label, 'chair_w_mm': chair_w_mm, 'chair_d_mm': chair_d_mm,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_layout_theater_seating(
+        ctx: Context,
+        x1: float, y1: float, x2: float, y2: float,
+        seat_width_mm: float = 508,
+        seat_depth_mm: float = 305,
+        row_spacing_mm: float = 914,
+        row_label_style: str = 'alpha',
+        aisle_after_cols: list = [],
+        aisle_width_mm: float = 1219,
+        ada_at_row_ends: bool = True,
+        section_label: str = 'General',
+    ) -> str:
+        """Auto-layout theater-style rows of seats within a boundary.
+
+        Rows are lettered A, B, C ... (skipping I and O) from stage outward.
+        Each seat gets an AV Seat record (Row, Seat_Num, Section, ADA) queryable
+        from Spotlight worksheets.
+
+        row_label_style : 'alpha' (A/B/C, default) | 'numeric' (1/2/3).
+        aisle_after_cols: e.g. [8] inserts a centre aisle after column 8.
+        ada_at_row_ends : mark first and last seat of every row as ADA (default True).
+        section_label   : written into each seat record for section-based reporting."""
+        return _cmd('av_layout_theater_seating', {
+            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+            'seat_width_mm': seat_width_mm, 'seat_depth_mm': seat_depth_mm,
+            'row_spacing_mm': row_spacing_mm, 'row_label_style': row_label_style,
+            'aisle_after_cols': aisle_after_cols, 'aisle_width_mm': aisle_width_mm,
+            'ada_at_row_ends': ada_at_row_ends, 'section_label': section_label,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_layout_classroom(
+        ctx: Context,
+        x1: float, y1: float, x2: float, y2: float,
+        table_width_mm: float = 762,
+        table_depth_mm: float = 610,
+        seats_per_table_unit: int = 1,
+        row_spacing_mm: float = 1829,
+        center_aisle_mm: float = 0,
+        table_units_per_row: int = 0,
+        start_table_num: int = 1,
+    ) -> str:
+        """Auto-layout classroom-style rows of rectangular tables with chairs.
+        Tables face the stage; chairs are on the downstage side of each table.
+
+        table_width_mm / seats_per_table_unit: a 762 mm (30 in) unit holds 1 person;
+        use 1524 mm + seats_per_table_unit=2 for 2-person tables.
+        row_spacing_mm default 1829 (72 in) accommodates table + chair + clearance."""
+        return _cmd('av_layout_classroom', {
+            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+            'table_width_mm': table_width_mm, 'table_depth_mm': table_depth_mm,
+            'seats_per_table_unit': seats_per_table_unit,
+            'row_spacing_mm': row_spacing_mm,
+            'center_aisle_mm': center_aisle_mm,
+            'table_units_per_row': table_units_per_row,
+            'start_table_num': start_table_num,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_layout_cocktail_tables(
+        ctx: Context,
+        x1: float, y1: float, x2: float, y2: float,
+        diameter_mm: float = 686,
+        col_spacing_mm: float = 2134,
+        row_spacing_mm: float = 2134,
+        n_stools: int = 3,
+        start_table_num: int = 1,
+    ) -> str:
+        """Auto-layout cocktail / high-top reception tables.
+        diameter_mm default 686 = 27 in (standard cocktail table).
+        n_stools: 0 = standing cocktail only; 3–4 = bar stools shown in plan.
+        Returns tables_placed and capacity_estimate."""
+        return _cmd('av_layout_cocktail_tables', {
+            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+            'diameter_mm': diameter_mm,
+            'col_spacing_mm': col_spacing_mm, 'row_spacing_mm': row_spacing_mm,
+            'n_stools': n_stools, 'start_table_num': start_table_num,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_place_camera_position(
+        ctx: Context,
+        cx: float, cy: float,
+        label: str = 'CAM-1',
+        camera_type: str = 'broadcast',
+        aim_deg: float = 270,
+    ) -> str:
+        """Mark a camera position in plan view on the AV-Cameras layer.
+        Draws an operator zone circle and a directional triangle.
+        camera_type: 'broadcast' | 'handheld' | 'ptz' | 'jib' | 'streaming'.
+        aim_deg: 270 = pointing toward stage (default for FOH position)."""
+        return _cmd('av_place_camera_position', {
+            'cx': cx, 'cy': cy, 'label': label,
+            'camera_type': camera_type, 'aim_deg': aim_deg,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_place_confidence_monitor(
+        ctx: Context,
+        cx: float, cy: float,
+        label: str = 'CONF-1',
+        width_mm: float = 1067,
+        depth_mm: float = 50,
+    ) -> str:
+        """Place a confidence monitor / stage monitor on the AV-Video layer.
+        Positioned on stage floor facing the presenter.
+        Typical placement: 1–2 m downstage of the podium, near stage edge.
+        width_mm default 1067 ≈ 42 in diagonal monitor."""
+        return _cmd('av_place_confidence_monitor', {
+            'cx': cx, 'cy': cy, 'label': label,
+            'width_mm': width_mm, 'depth_mm': depth_mm,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_place_registration(
+        ctx: Context,
+        cx: float, cy: float,
+        label: str = 'REGISTRATION',
+        width_mm: float = 3658,
+        depth_mm: float = 762,
+        n_staff_chairs: int = 4,
+        queue_depth_mm: float = 2438,
+    ) -> str:
+        """Place a registration / check-in desk on the AV-FOH layer.
+        Draws the desk, staff chairs, and a dotted queue-management zone.
+        Typically placed near the main entrance, perpendicular to guest flow."""
+        return _cmd('av_place_registration', {
+            'cx': cx, 'cy': cy, 'label': label,
+            'width_mm': width_mm, 'depth_mm': depth_mm,
+            'n_staff_chairs': n_staff_chairs, 'queue_depth_mm': queue_depth_mm,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_draw_seating_legend(
+        ctx: Context,
+        cx: float, cy: float,
+        event_name: str = 'EVENT',
+        sections: list = [],
+        box_width_mm: float = 3000,
+        row_height_mm: float = 300,
+    ) -> str:
+        """Draw a seating capacity legend / key box on the AV-Notes layer.
+        sections: list of dicts with keys: label (str), seats (int), tables (int, optional).
+        Example: [{'label':'General','tables':20,'seats':200},{'label':'VIP','seats':50}]
+        Returns total_seats and total_tables from the legend."""
+        return _cmd('av_draw_seating_legend', {
+            'cx': cx, 'cy': cy, 'event_name': event_name,
+            'sections': sections,
+            'box_width_mm': box_width_mm, 'row_height_mm': row_height_mm,
+        })
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Generic ballroom orchestration (existing)
     # ─────────────────────────────────────────────────────────────────────────
 
     @mcp.tool(structured_output=False)
@@ -781,3 +1079,337 @@ def _register(mcp):
 
         return json.dumps({'status': 'ok' if not errs else 'partial',
                            'summary': summary, 'detail': results}, indent=2)
+
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Corporate event orchestration
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @mcp.tool(structured_output=False)
+    def av_corporate_event_layout(
+        ctx: Context,
+        event_type: str,
+        room_width_mm: float,
+        room_length_mm: float,
+        room_height_mm: float = 9144,
+        stage_width_mm: float = 9144,
+        stage_depth_mm: float = 4267,
+        stage_height_mm: float = 762,
+        screen_trim_mm: float = 2743,
+        event_name: str = 'Corporate Event',
+        head_table_seats: int = 0,
+        camera_positions: int = 2,
+        main_screen_width_mm: Optional[float] = None,
+    ) -> str:
+        """Orchestrate a complete corporate event layout by event type.
+
+        event_type values:
+          'awards_gala'  — banquet rounds + head table on stage + podium + IMAG screens +
+                           line arrays + cameras.  Gala dinner / awards ceremony format.
+          'keynote'      — theater-style seating + stage + podium + confidence monitors +
+                           main screen + flanking IMAG + center cluster or point source.
+                           Town hall / all-hands / product launch format.
+          'reception'    — cocktail high-tops filling the room + minimal stage or no stage +
+                           background audio point sources.  Pre-dinner or standalone format.
+          'training'     — classroom rows + large main screen + minimal flanking audio.
+                           Training session / breakout / workshop format.
+
+        Corporate-specific steps vs generic av_ballroom_layout:
+          • Podium with confidence monitor placed center or SR on stage
+          • Head table drawn on stage for gala / awards (head_table_seats > 0)
+          • Camera positions placed at FOH and side aisles
+          • Registration desk placed at room back
+          • Seating legend generated automatically
+          • Layer: AV-Lighting created for Spotlight lighting design integration
+
+        Returns a JSON summary and per-element results."""
+
+        results = {}
+        errs    = []
+
+        def _do(key, command, params):
+            try:
+                results[key] = json.loads(_cmd(command, params))
+            except Exception as e:
+                results[key] = {'error': str(e)}
+                errs.append(f'{key}: {e}')
+
+        rl = room_length_mm
+        rw = room_width_mm
+        rh = room_height_mm
+        sw = stage_width_mm
+        sd = stage_depth_mm
+        sh = stage_height_mm
+
+        # Derived geometry (origin = room center, +Y = toward stage/north)
+        stage_back_y  =  rl / 2
+        stage_front_y =  rl / 2 - sd          # downstage edge
+        room_back_y   = -rl / 2               # back wall
+        trim_spk      = min(rh * 0.65, 7315)  # speaker trim ≤ 24 ft
+
+        if main_screen_width_mm is None:
+            back_dist = rl - sd
+            calc_w = 2 * back_dist * math.tan(math.radians(15))
+            main_screen_width_mm = max(4572, min(calc_w, rw * 0.50))
+
+        # ── 1. Document setup ──────────────────────────────────────────────
+        _do('setup', 'av_setup_document', {})
+
+        # ── 2. Room ────────────────────────────────────────────────────────
+        _do('room', 'av_draw_room', {'width_mm': rw, 'length_mm': rl})
+
+        # ── 3. Stage (skip for reception) ──────────────────────────────────
+        if event_type != 'reception':
+            _do('stage', 'av_draw_stage', {
+                'width_mm': sw, 'depth_mm': sd,
+                'height_mm': sh, 'room_length_mm': rl, 'position': 'north',
+            })
+
+        # ── 4. Screens ─────────────────────────────────────────────────────
+        scr_y = stage_back_y
+        if event_type in ('awards_gala', 'keynote'):
+            center_w = min(sw * 0.80, rw * 0.44)
+            imag_off = sw/2 + main_screen_width_mm/2 + 610
+            imag_off = min(imag_off, rw/2 - main_screen_width_mm/2 - 305)
+            _do('screen_l', 'av_place_screen', {
+                'x': -imag_off, 'y': scr_y, 'width_mm': main_screen_width_mm,
+                'trim_mm': screen_trim_mm, 'label': 'IMAG-L',
+            })
+            _do('screen_r', 'av_place_screen', {
+                'x':  imag_off, 'y': scr_y, 'width_mm': main_screen_width_mm,
+                'trim_mm': screen_trim_mm, 'label': 'IMAG-R',
+            })
+            _do('screen_main', 'av_place_screen', {
+                'x': 0, 'y': scr_y, 'width_mm': center_w,
+                'trim_mm': screen_trim_mm + 305, 'label': 'MAIN',
+            })
+        elif event_type == 'training':
+            # Single wide screen centered above stage
+            _do('screen_main', 'av_place_screen', {
+                'x': 0, 'y': scr_y, 'width_mm': min(sw * 0.9, rw * 0.55),
+                'trim_mm': screen_trim_mm, 'label': 'MAIN',
+            })
+
+        # ── 5. Podium + confidence monitors ────────────────────────────────
+        pod_x = sw * 0.15   # slightly stage-right of centre
+        pod_y = stage_back_y - sd * 0.4
+        if event_type in ('awards_gala', 'keynote', 'training'):
+            _do('podium', 'av_place_podium', {
+                'cx': pod_x, 'cy': pod_y, 'label': 'PODIUM',
+                'confidence_monitor': True,
+            })
+            # Two confidence monitors downstage
+            conf_y = stage_front_y + 600
+            _do('conf_l', 'av_place_confidence_monitor', {
+                'cx': -sw * 0.25, 'cy': conf_y, 'label': 'CONF-L',
+            })
+            _do('conf_r', 'av_place_confidence_monitor', {
+                'cx':  sw * 0.25, 'cy': conf_y, 'label': 'CONF-R',
+            })
+
+        # ── 6. Head table (awards gala) ────────────────────────────────────
+        n_ht = head_table_seats if head_table_seats > 0 else (6 if event_type == 'awards_gala' else 0)
+        if n_ht > 0:
+            ht_w = max(2438, n_ht * 762)   # 762 mm per seat
+            _do('head_table', 'av_place_head_table', {
+                'cx': -sw * 0.20, 'cy': stage_back_y - sd * 0.7,
+                'width_mm': ht_w, 'n_seats': n_ht, 'label': 'HEAD TABLE',
+            })
+
+        # ── 7. Audio ───────────────────────────────────────────────────────
+        arr_x = sw/2 + 1524
+        arr_y = stage_front_y + 1524
+
+        if event_type in ('awards_gala', 'keynote'):
+            _do('spk_l', 'av_place_speaker_cluster', {
+                'x': -arr_x, 'y': arr_y, 'label': 'L',
+                'n_boxes': 8, 'trim_mm': trim_spk,
+                'h_angle_deg': 90, 'v_angle_deg': 20, 'downtilt_deg': 18,
+            })
+            _do('spk_r', 'av_place_speaker_cluster', {
+                'x':  arr_x, 'y': arr_y, 'label': 'R',
+                'n_boxes': 8, 'trim_mm': trim_spk,
+                'h_angle_deg': 90, 'v_angle_deg': 20, 'downtilt_deg': 18,
+            })
+            _do('spk_c', 'av_place_speaker', {
+                'x': 0, 'y': stage_front_y, 'label': 'C-FILL',
+                'trim_mm': trim_spk * 0.50, 'h_angle_deg': 100,
+                'v_angle_deg': 60, 'downtilt_deg': 30, 'draw_coverage': False,
+            })
+            # Subs ground-stack
+            sub_x = sw/2 + 200
+            _do('sub_l', 'av_place_subwoofer', {'x': -sub_x, 'y': stage_front_y, 'label': 'SUB-L', 'n_boxes': 4})
+            _do('sub_r', 'av_place_subwoofer', {'x':  sub_x, 'y': stage_front_y, 'label': 'SUB-R', 'n_boxes': 4})
+        elif event_type in ('training', 'reception'):
+            # Lighter point-source flanking
+            ps_x = sw/2 + 600
+            ps_trim = min(rh * 0.55, 5486)
+            _do('spk_l', 'av_place_speaker', {
+                'x': -ps_x, 'y': stage_front_y if event_type == 'training' else 0,
+                'label': 'L PS', 'trim_mm': ps_trim,
+                'h_angle_deg': 100, 'v_angle_deg': 60, 'downtilt_deg': 20,
+            })
+            _do('spk_r', 'av_place_speaker', {
+                'x':  ps_x, 'y': stage_front_y if event_type == 'training' else 0,
+                'label': 'R PS', 'trim_mm': ps_trim,
+                'h_angle_deg': 100, 'v_angle_deg': 60, 'downtilt_deg': 20,
+            })
+
+        # ── 8. Truss (gala + keynote) ──────────────────────────────────────
+        if event_type in ('awards_gala', 'keynote'):
+            truss_trim = min(rh * 0.72, 7925)
+            hs = sw/2 + 1000
+            _do('truss_front', 'av_place_truss', {
+                'x1': -hs, 'y1': stage_front_y + 900,
+                'x2':  hs, 'y2': stage_front_y + 900,
+                'trim_mm': truss_trim, 'label': 'T-1 FRONT',
+            })
+
+        # ── 9. Seating ─────────────────────────────────────────────────────
+        foh_y    = room_back_y + rl * 0.32   # FOH at ~32 % from back wall
+        seat_x1  = -rw/2 + 1524
+        seat_x2  =  rw/2 - 1524
+        seat_y1  = room_back_y + 1524
+        seat_y2  = stage_front_y - 3048
+
+        sections_legend = []
+
+        if event_type == 'awards_gala':
+            _do('seating', 'av_layout_seating', {
+                'x1': seat_x1, 'y1': seat_y1, 'x2': seat_x2, 'y2': seat_y2,
+                'diameter_mm': 1828, 'n_seats': 10,
+                'col_spacing_mm': 2743, 'row_spacing_mm': 2743,
+                'aisle_x_mm': 1829, 'start_table_num': 1,
+            })
+            s = results.get('seating', {})
+            sections_legend = [
+                {'label': 'General Seating',
+                 'tables': s.get('tables_placed', 0),
+                 'seats':  s.get('total_seats',   0)},
+                {'label': 'Head Table', 'seats': n_ht},
+            ]
+
+        elif event_type == 'keynote':
+            # Center aisle after approx half the columns
+            _do('seating', 'av_layout_theater_seating', {
+                'x1': seat_x1, 'y1': seat_y1, 'x2': seat_x2, 'y2': seat_y2,
+                'seat_width_mm': 508, 'seat_depth_mm': 305, 'row_spacing_mm': 914,
+                'row_label_style': 'alpha', 'aisle_after_cols': [],
+                'ada_at_row_ends': True, 'section_label': 'General',
+            })
+            s = results.get('seating', {})
+            sections_legend = [
+                {'label': 'General', 'seats': s.get('total_seats', 0)},
+                {'label': 'ADA', 'seats': s.get('rows', 0) * 2},
+            ]
+
+        elif event_type == 'training':
+            _do('seating', 'av_layout_classroom', {
+                'x1': seat_x1, 'y1': seat_y1, 'x2': seat_x2, 'y2': seat_y2,
+                'table_width_mm': 762, 'table_depth_mm': 610,
+                'seats_per_table_unit': 1, 'row_spacing_mm': 1829,
+                'center_aisle_mm': 1219,
+            })
+            s = results.get('seating', {})
+            sections_legend = [
+                {'label': 'Classroom', 'seats': s.get('total_seats', 0)},
+            ]
+
+        elif event_type == 'reception':
+            _do('seating', 'av_layout_cocktail_tables', {
+                'x1': seat_x1, 'y1': seat_y1, 'x2': seat_x2,
+                'y2': room_back_y + rl * 0.85,   # fill most of room
+                'diameter_mm': 686, 'col_spacing_mm': 2134,
+                'row_spacing_mm': 2134, 'n_stools': 3,
+            })
+            s = results.get('seating', {})
+            sections_legend = [
+                {'label': 'Cocktail', 'tables': s.get('tables_placed', 0),
+                 'seats': s.get('capacity_estimate', 0)},
+            ]
+
+        # ── 10. FOH ────────────────────────────────────────────────────────
+        _do('foh', 'av_place_foh', {
+            'cx': 0, 'cy': foh_y,
+            'width_mm': 5486, 'depth_mm': 1524, 'label': 'FOH',
+        })
+
+        # ── 11. Camera positions ───────────────────────────────────────────
+        if camera_positions > 0 and event_type != 'reception':
+            cam_y = foh_y + 600
+            _do('cam_c', 'av_place_camera_position', {
+                'cx': 0, 'cy': cam_y, 'label': 'CAM-1', 'camera_type': 'broadcast',
+            })
+            if camera_positions >= 2:
+                side_x = rw * 0.38
+                _do('cam_l', 'av_place_camera_position', {
+                    'cx': -side_x, 'cy': foh_y + rl * 0.12,
+                    'label': 'CAM-2', 'camera_type': 'handheld',
+                })
+            if camera_positions >= 3:
+                _do('cam_r', 'av_place_camera_position', {
+                    'cx': side_x, 'cy': foh_y + rl * 0.12,
+                    'label': 'CAM-3', 'camera_type': 'handheld',
+                })
+
+        # ── 12. Power distro ───────────────────────────────────────────────
+        _do('power', 'av_place_power_distro', {
+            'cx': rw/2 - 1200, 'cy': stage_front_y,
+            'label': 'A-DISTRO', 'amperage': 200, 'phase': '3ph',
+        })
+
+        # ── 13. Registration desk ──────────────────────────────────────────
+        reg_x = rw * 0.30
+        _do('registration', 'av_place_registration', {
+            'cx': reg_x, 'cy': room_back_y + 1800,
+            'label': 'REGISTRATION', 'width_mm': 3658,
+            'n_staff_chairs': 4, 'queue_depth_mm': 2134,
+        })
+
+        # ── 14. Seating legend ─────────────────────────────────────────────
+        legend_x = -rw/2 - 4000
+        _do('legend', 'av_draw_seating_legend', {
+            'cx': legend_x, 'cy': rl/2,
+            'event_name': event_name, 'sections': sections_legend,
+        })
+
+        # ── 15. Zoom to fit ────────────────────────────────────────────────
+        try:
+            results['view'] = json.loads(_cmd('zoom_to_fit', {}))
+        except Exception:
+            pass
+
+        # ── Summary ────────────────────────────────────────────────────────
+        seat_data = results.get('seating', {})
+        summary = {
+            'event_name':  event_name,
+            'event_type':  event_type,
+            'room':   {'width_ft':  round(rw/304.8, 0),
+                       'length_ft': round(rl/304.8, 0),
+                       'height_ft': round(rh/304.8, 0)},
+            'stage':  {'width_ft': round(sw/304.8, 0),
+                       'depth_ft': round(sd/304.8, 0),
+                       'deck_in':  round(sh/25.4, 0)},
+            'screens': {'main_width_ft': round(
+                            (center_w if event_type in ('awards_gala','keynote')
+                             else main_screen_width_mm) / 304.8, 1),
+                        'trim_ft': round(screen_trim_mm/304.8, 1)},
+            'seating': {
+                'type':       event_type,
+                'total_seats': (seat_data.get('total_seats') or
+                                seat_data.get('capacity_estimate', 0)),
+            },
+            'cameras': camera_positions,
+            'head_table_seats': n_ht,
+            'spotlight_layers': [
+                'AV-Lighting',   # place Spotlight lighting devices here
+                'AV-Seating',    # AV Seat records queryable via worksheet
+                'AV-Head-Table', 'AV-Cameras', 'AV-ADA',
+            ],
+            'errors': errs,
+        }
+
+        return json.dumps({
+            'status': 'ok' if not errs else 'partial',
+            'summary': summary, 'detail': results,
+        }, indent=2)
