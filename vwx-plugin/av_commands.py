@@ -221,17 +221,10 @@ def av_setup_document(p):
             if vs.GetObject(rec_name):
                 record_results.append(f'{rec_name}: exists')
             else:
-                # NewField creates the record if it doesn't exist (first call)
-                sentinel, first = '_sentinel_', True
-                for fname, fdef, ftype in [(sentinel, '', 4)] + fields:
-                    if first:
-                        vs.NewField(rec_name, fname, fdef, ftype, 0)
-                        first = False
-                    else:
-                        vs.NewField(rec_name, fname, fdef, ftype, 0)
-                # Remove the sentinel field
-                try: _safe(lambda: vs.DelField(rec_name, sentinel))
-                except Exception: pass
+                # vs.NewField creates the record on the first call;
+                # subsequent calls add fields to the existing record.
+                for fname, fdef, ftype in fields:
+                    vs.NewField(rec_name, fname, fdef, ftype, 0)
                 record_results.append(f'{rec_name}: created')
         except Exception as e:
             record_results.append(f'{rec_name}: error {e}')
@@ -1145,7 +1138,9 @@ def av_place_podium(p):
                 vs.SetFillFore(mon_h, (_c8(200), _c8(30), _c8(80)))
                 vs.SetFillBack(mon_h, (_c8(200), _c8(30), _c8(80)))
                 ids.append(_oid(mon_h))
+            vs.NameClass('AV-Notes')
             _av_draw_text(cx, mon_y - 200, 'CONF', size_mm=100)
+            vs.NameClass('AV-Podium')
 
         _av_attach_record(pod_h, AV_REC_DEVICE, {
             'Device_Type': 'Podium', 'Label': lbl,
@@ -1207,9 +1202,10 @@ def av_place_head_table(p):
         lbl_h = _av_draw_text(cx, cy, f'{lbl}\n({n} seats)', size_mm=160)
         if lbl_h: ids.append(_oid(lbl_h))
 
-        _av_attach_record(tbl_h, AV_REC_DEVICE, {
-            'Device_Type': 'Head Table', 'Label': lbl,
-        }) if tbl_h else None
+        if tbl_h:
+            _av_attach_record(tbl_h, AV_REC_DEVICE, {
+                'Device_Type': 'Head Table', 'Label': lbl,
+            })
 
         return {
             'status': 'ok', 'object_ids': ids,
@@ -1592,9 +1588,10 @@ def av_place_camera_position(p):
                                lbl, size_mm=150)
         if lbl_h: ids.append(_oid(lbl_h))
 
-        _av_attach_record(ids[0] if ids else None, AV_REC_DEVICE, {
-            'Device_Type': f'Camera-{ctype}', 'Label': lbl,
-        }) if ids else None
+        if ids:
+            _av_attach_record(ids[0], AV_REC_DEVICE, {
+                'Device_Type': f'Camera-{ctype}', 'Label': lbl,
+            })
 
         return {'status': 'ok', 'object_ids': ids, 'position': {'x': cx, 'y': cy}}
     finally:

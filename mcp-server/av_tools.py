@@ -69,6 +69,8 @@ _cmd = None   # set to the server's cmd() function
 def register_av_tools(mcp_instance, cmd_fn):
     """Call once from vwx_mcp_server.py to register all AV tools."""
     global _cmd
+    if cmd_fn is None:
+        raise ValueError('cmd_fn must not be None — pass the server cmd() function')
     _cmd = cmd_fn
     _register(mcp_instance)
 
@@ -941,8 +943,7 @@ def _register(mcp):
         native_h     = int(act_h / pp)
 
         # Aspect ratio
-        from math import gcd
-        g = gcd(native_w, native_h)
+        g = math.gcd(native_w, native_h)
         ar_str = f'{native_w//g}:{native_h//g}'
 
         recs = []
@@ -1149,7 +1150,7 @@ def _register(mcp):
             'height_mm': stage_height_mm, 'room_length_mm': room_length_mm,
             'position': 'north',
         })
-        stage_front_y = -(room_length_mm/2 - stage_depth_mm)   # negative Y = downstage edge
+        stage_front_y = room_length_mm/2 - stage_depth_mm   # downstage edge, positive Y (north-wall stage)
 
         # ── 4. Screen sizing ───────────────────────────────────────────────
         # Main screens: aim for ≈30° horizontal angle from the back row
@@ -1372,7 +1373,8 @@ def _register(mcp):
             })
 
         # ── 4. Screens ─────────────────────────────────────────────────────
-        scr_y = stage_back_y
+        scr_y    = stage_back_y
+        center_w = main_screen_width_mm   # fallback; overridden for gala/keynote below
         if event_type in ('awards_gala', 'keynote'):
             center_w = min(sw * 0.80, rw * 0.44)
             imag_off = sw/2 + main_screen_width_mm/2 + 610
@@ -1596,9 +1598,7 @@ def _register(mcp):
             'stage':  {'width_ft': round(sw/304.8, 0),
                        'depth_ft': round(sd/304.8, 0),
                        'deck_in':  round(sh/25.4, 0)},
-            'screens': {'main_width_ft': round(
-                            (center_w if event_type in ('awards_gala','keynote')
-                             else main_screen_width_mm) / 304.8, 1),
+            'screens': {'main_width_ft': round(center_w / 304.8, 1),
                         'trim_ft': round(screen_trim_mm/304.8, 1)},
             'seating': {
                 'type':       event_type,
