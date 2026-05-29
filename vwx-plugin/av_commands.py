@@ -39,6 +39,7 @@ AV_REC_DEVICE  = 'AV Device'
 AV_REC_RIGGING = 'AV Rigging Point'
 AV_REC_CABLE   = 'AV Cable'
 AV_REC_SEAT    = 'AV Seat'         # theater/corporate seat assignment record
+AV_REC_LED     = 'AV LED Wall'     # LED panel wall specs (pitch, panels, weight, power)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ _AV_CLASSES = {
     'AV-ADA':           (( 40, 175,  80), ( 15, 135,  50),  25),
     'AV-Registration':  (( 90, 190, 235), ( 40, 140, 190),  35),
     'AV-Cocktail-Table':((235, 215, 195), (125, 110,  90),  25),
+    'AV-LED-Grid':      ((200,   0,  40), (160,   0,  20),   8),  # panel seam lines
 }
 
 
@@ -203,6 +205,16 @@ def av_setup_document(p):
         (AV_REC_SEAT, [
             ('Row', '', 4), ('Seat_Num', '0', 1), ('Section', 'General', 4),
             ('ADA', 'No', 4), ('Status', 'Available', 4), ('Assignment', '', 4),
+        ]),
+        (AV_REC_LED, [
+            ('Pixel_Pitch_mm', '3.9', 3),
+            ('Panel_Width_mm', '500', 1), ('Panel_Height_mm', '500', 1),
+            ('Panels_Wide', '0', 1),      ('Panels_Tall',  '0', 1),
+            ('Total_Panels', '0', 1),
+            ('Total_Weight_kg', '0', 3),  ('Total_Power_W', '0', 1),
+            ('MVD_m', '0', 3),            ('Support_Type', 'flown', 4),
+            ('Content_Res_W', '0', 1),    ('Content_Res_H', '0', 1),
+            ('Trim_mm', '0', 1),          ('Notes', '', 4),
         ]),
     ]:
         try:
@@ -1773,3 +1785,215 @@ def av_draw_seating_legend(p):
         }
     finally:
         _restore(prev)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LED walls
+# ─────────────────────────────────────────────────────────────────────────────
+
+def av_place_led_wall(p):
+    """Place an LED video wall in plan view with panel-grid annotation.
+
+    Dimensions are snapped outward to the nearest whole panel so the physical
+    size always divides evenly.  Weight and power are computed from panel count.
+
+    cx, cy             : centre of the wall footprint in plan (mm).
+    width_mm           : desired image width (snapped to panel multiple).
+    height_mm          : image height in elevation — stored in record and label,
+                         not drawn to scale in plan (use elevation drawing for that).
+    pixel_pitch_mm     : e.g. 2.6 | 3.9 | 4.8 | 5.9  (default 3.9).
+    panel_width_mm     : cabinet width (default 500 mm).
+    panel_height_mm    : cabinet height (default 500 mm).
+    plan_depth_mm      : footprint depth in plan (default 300 mm — panel chassis depth).
+    trim_mm            : bottom-of-LED-wall height from floor (default 2438 = 8 ft).
+    support_type       : 'flown' | 'ground' | 'hybrid' (default 'flown').
+    weight_per_panel_kg: per-cabinet weight (default 8.5 kg for 500×500 mm cabinet).
+    power_per_m2_w     : watts per square metre (default 200 W/m² at typical load).
+    label              : 'IMAG-L' | 'MAIN' | 'BACKDROP' | etc.
+
+    Returns actual snapped dimensions, panel count, weight, power, and MVD."""
+    prev = _with_layer_class({'layer': 'AV-Video', 'class': 'AV-LED-Wall'})
+    try:
+        cx         = float(p.get('cx', 0))
+        cy         = float(p.get('cy', 0))
+        desired_w  = float(p.get('width_mm',  4500))
+        height_mm  = float(p.get('height_mm', 2500))
+        pitch      = float(p.get('pixel_pitch_mm', 3.9))
+        panel_w    = float(p.get('panel_width_mm',  500))
+        panel_h    = float(p.get('panel_height_mm', 500))
+        plan_d     = float(p.get('plan_depth_mm',   300))
+        trim       = float(p.get('trim_mm', 2438))
+        support    = str(p.get('support_type', 'flown')).lower()
+        w_per_panel = float(p.get('weight_per_panel_kg', 8.5))
+        pwr_m2     = float(p.get('power_per_m2_w', 200))
+        label      = str(p.get('label', 'LED'))
+
+        # Snap to panel multiples
+        panels_wide = max(1, round(desired_w / panel_w))
+        panels_tall = max(1, round(height_mm / panel_h))
+        actual_w    = panels_wide * panel_w
+        actual_h    = panels_tall * panel_h
+        total_panels = panels_wide * panels_tall
+
+        total_kg   = total_panels * w_per_panel
+        area_m2    = (actual_w / 1000) * (actual_h / 1000)
+        total_w    = area_m2 * pwr_m2
+        mvd_m      = pitch * 8        # comfortable viewing rule-of-thumb
+        content_w  = int(actual_w / pitch)   # native pixel count
+        content_h  = int(actual_h / pitch)
+
+        # ── Plan footprint rectangle ───────────────────────────────────────
+        x1 = cx - actual_w/2;  x2 = cx + actual_w/2
+        y1 = cy - plan_d/2;    y2 = cy + plan_d/2
+        vs.Rect((x1, y1), (x2, y2))
+        led_h = vs.LNewObj()
+        if led_h:
+            vs.SetFPat(led_h, 1)
+            vs.SetFillFore(led_h, (_c8(240), _c8(20),  _c8(60)))
+            vs.SetFillBack(led_h, (_c8(240), _c8(20),  _c8(60)))
+            vs.SetLW(led_h, 50)
+        ids = [_oid(led_h)] if led_h else []
+
+        # ── Panel seam grid (vertical lines at cabinet boundaries) ─────────
+        vs.NameClass('AV-LED-Grid')
+        seam_x = x1 + panel_w
+        while seam_x < x2 - 1:
+            vs.MoveTo((seam_x, y1)); vs.LineTo((seam_x, y2))
+            gh = vs.LNewObj()
+            if gh:
+                vs.SetLW(gh, 8)
+                vs.SetPenFore(gh, (_c8(200), _c8(0),  _c8(40)))
+                vs.SetPenBack(gh, (_c8(200), _c8(0),  _c8(40)))
+            seam_x += panel_w
+        vs.NameClass('AV-LED-Wall')
+
+        # ── Support structure markers ──────────────────────────────────────
+        if support in ('flown', 'hybrid'):
+            n_rigs  = max(2, panels_wide // 2)
+            rig_sp  = actual_w / n_rigs
+            rig_y   = y2 + 200
+            vs.NameClass('AV-Motor')
+            for i in range(n_rigs):
+                rx = x1 + rig_sp * (i + 0.5)
+                vs.ArcByCenter((rx, rig_y), 150, 0, 360)
+                rph = vs.LNewObj()
+                if rph:
+                    vs.SetFPat(rph, 0); vs.SetLW(rph, 25)
+                    _av_attach_record(rph, AV_REC_RIGGING, {
+                        'Trim_mm': int(trim + actual_h),
+                        'Load_kg': round(total_kg / n_rigs, 1),
+                        'Capacity_kg': 500,
+                    })
+                    ids.append(_oid(rph))
+            vs.NameClass('AV-LED-Wall')
+
+        if support in ('ground', 'hybrid'):
+            # Ground-support leg footprints (front and back at corners + centre)
+            leg = 150
+            support_xs = [x1 + 300, cx, x2 - 300]
+            vs.NameClass('AV-Rigging')
+            for lx in support_xs:
+                for offset in (-plan_d/2 - 200, plan_d/2 + 200 - leg):
+                    vs.Rect((lx - leg/2, cy + offset),
+                             (lx + leg/2, cy + offset + leg))
+                    lgh = vs.LNewObj()
+                    if lgh:
+                        vs.SetFPat(lgh, 1)
+                        vs.SetFillFore(lgh, (_c8(120), _c8(120), _c8(120)))
+                        vs.SetFillBack(lgh, (_c8(120), _c8(120), _c8(120)))
+                        ids.append(_oid(lgh))
+            vs.NameClass('AV-LED-Wall')
+
+        # ── Spec annotation ───────────────────────────────────────────────
+        trim_ft = trim / 304.8
+        ann = (f"{label}  {actual_w/1000:.2f}m × {actual_h/1000:.2f}m  P{pitch}\n"
+               f"{panels_wide}×{panels_tall} panels  {total_panels} cab  "
+               f"{total_kg:.0f}kg  {total_w:.0f}W  MVD {mvd_m:.0f}m\n"
+               f"Content {content_w}×{content_h}px  Trim {trim_ft:.1f}'")
+        lbl_h = _av_draw_text(cx, y2 + 400, ann, size_mm=150)
+        if lbl_h: ids.append(_oid(lbl_h))
+
+        # Width dimension line
+        vs.NameClass('AV-Dims')
+        try:
+            vs.LinDimN((x1, y1 - 350), (x2, y1 - 350), 0, 0)
+            dh = vs.LNewObj()
+            if dh: ids.append(_oid(dh))
+        except Exception:
+            pass
+        vs.NameClass('AV-LED-Wall')
+
+        # ── Records ───────────────────────────────────────────────────────
+        if led_h:
+            _av_attach_record(led_h, AV_REC_LED, {
+                'Pixel_Pitch_mm': pitch, 'Panel_Width_mm': int(panel_w),
+                'Panel_Height_mm': int(panel_h), 'Panels_Wide': panels_wide,
+                'Panels_Tall': panels_tall, 'Total_Panels': total_panels,
+                'Total_Weight_kg': round(total_kg, 1),
+                'Total_Power_W': round(total_w, 0), 'MVD_m': round(mvd_m, 1),
+                'Support_Type': support, 'Trim_mm': int(trim),
+                'Content_Res_W': content_w, 'Content_Res_H': content_h,
+            })
+            _av_attach_record(led_h, AV_REC_DEVICE, {
+                'Device_Type': 'LED Wall', 'Label': label,
+                'Trim_mm': int(trim), 'Weight_kg': round(total_kg, 1),
+                'Power_W': int(total_w),
+            })
+
+        return {
+            'status': 'ok', 'object_ids': ids,
+            'actual_width_mm':  actual_w,
+            'actual_height_mm': actual_h,
+            'panels': {'wide': panels_wide, 'tall': panels_tall,
+                       'total': total_panels},
+            'pixel_pitch_mm':   pitch,
+            'content_resolution': f'{content_w}×{content_h}',
+            'total_weight_kg':  round(total_kg, 1),
+            'total_power_w':    round(total_w, 0),
+            'mvd_m':            round(mvd_m, 1),
+            'support_type':     support,
+        }
+    finally:
+        _restore(prev)
+
+
+def av_place_led_backdrop(p):
+    """Place a full-width LED backdrop behind the stage.
+
+    Convenience wrapper around av_place_led_wall that positions the wall
+    flush against the stage back wall and defaults to ground support.
+
+    stage_width_mm    : determines the LED width (default 12192 = 40 ft).
+    room_length_mm    : used to compute the back-wall Y position.
+    height_mm         : backdrop elevation height (default 4000 = 13 ft).
+    pixel_pitch_mm    : default 3.9 (good for 5–30 m viewing).
+    cx                : horizontal centre offset from room centre (default 0).
+    overhang_mm       : how much wider than the stage the LED extends each side
+                        (default 0 — flush with stage edges).
+    label             : 'BACKDROP' | event branding label.
+
+    Returns same fields as av_place_led_wall."""
+    stage_w = float(p.get('stage_width_mm', 12192))
+    rl      = float(p.get('room_length_mm', 24384))
+    overhang = float(p.get('overhang_mm', 0))
+    width_mm = stage_w + 2 * overhang
+    height_mm = float(p.get('height_mm', 4000))
+    pitch    = float(p.get('pixel_pitch_mm', 3.9))
+    panel_w  = float(p.get('panel_width_mm',  500))
+    panel_h  = float(p.get('panel_height_mm', 500))
+    label    = str(p.get('label', 'BACKDROP'))
+    cx       = float(p.get('cx', 0))
+    cy       = rl / 2 - 150   # 150 mm offset from back wall
+
+    return av_place_led_wall({
+        'cx': cx, 'cy': cy,
+        'width_mm': width_mm, 'height_mm': height_mm,
+        'pixel_pitch_mm': pitch,
+        'panel_width_mm': panel_w, 'panel_height_mm': panel_h,
+        'plan_depth_mm': 200,     # thinner footprint — flush against wall
+        'trim_mm': 0,
+        'support_type': p.get('support_type', 'ground'),
+        'weight_per_panel_kg': float(p.get('weight_per_panel_kg', 8.5)),
+        'power_per_m2_w':      float(p.get('power_per_m2_w', 200)),
+        'label': label,
+    })

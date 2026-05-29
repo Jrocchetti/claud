@@ -879,6 +879,212 @@ def _register(mcp):
         })
 
     # ─────────────────────────────────────────────────────────────────────────
+    # LED walls
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @mcp.tool(structured_output=False)
+    def av_calc_led_wall(
+        ctx: Context,
+        pixel_pitch_mm: float,
+        physical_width_mm: Optional[float] = None,
+        physical_height_mm: Optional[float] = None,
+        content_width_px: Optional[int] = None,
+        content_height_px: Optional[int] = None,
+        panel_width_mm: float = 500,
+        panel_height_mm: float = 500,
+        weight_per_panel_kg: float = 8.5,
+        power_per_m2_w: float = 200,
+        audience_distance_mm: Optional[float] = None,
+    ) -> str:
+        """Calculate LED wall specifications — no VW connection required.
+
+        Provide EITHER physical dimensions OR content resolution (not both):
+          physical_width_mm + physical_height_mm  → snaps to panels, returns pixel count
+          content_width_px  + content_height_px   → returns physical size for that resolution
+
+        Common corporate pixel pitches:
+          P1.9  ultra-fine, studio / command centre,  MVD ~15 m
+          P2.6  fine detail, close viewing (≤8 m),   MVD ~21 m
+          P3.9  most common ballroom / corporate,     MVD ~31 m
+          P4.8  mid-range, large venues,              MVD ~38 m
+          P5.9  cost-effective, 20 m+ audience,       MVD ~47 m
+
+        weight_per_panel_kg: 8–9 kg typical for 500×500 mm indoor rental cabinet.
+        power_per_m2_w:      150 W/m² typical average; 300 W/m² peak max draw.
+        audience_distance_mm: if provided, returns whether pixel pitch is adequate."""
+        pp = float(pixel_pitch_mm)
+        pw = float(panel_width_mm)
+        ph = float(panel_height_mm)
+        mvd_m = pp * 8   # comfortable rule-of-thumb (pp * 1000 / 125)
+
+        if physical_width_mm is not None and physical_height_mm is not None:
+            panels_wide = max(1, round(float(physical_width_mm) / pw))
+            panels_tall = max(1, round(float(physical_height_mm) / ph))
+            act_w = panels_wide * pw
+            act_h = panels_tall * ph
+        elif content_width_px is not None and content_height_px is not None:
+            act_w_exact = content_width_px * pp
+            act_h_exact = content_height_px * pp
+            panels_wide = math.ceil(act_w_exact / pw)
+            panels_tall = math.ceil(act_h_exact / ph)
+            act_w = panels_wide * pw
+            act_h = panels_tall * ph
+        else:
+            return json.dumps({'error': 'Provide (physical_width_mm + physical_height_mm) '
+                                        'or (content_width_px + content_height_px)'})
+
+        total_panels = panels_wide * panels_tall
+        area_m2      = (act_w / 1000) * (act_h / 1000)
+        total_kg     = total_panels * float(weight_per_panel_kg)
+        total_pwr    = area_m2 * float(power_per_m2_w)
+        native_w     = int(act_w / pp)
+        native_h     = int(act_h / pp)
+
+        # Aspect ratio
+        from math import gcd
+        g = gcd(native_w, native_h)
+        ar_str = f'{native_w//g}:{native_h//g}'
+
+        recs = []
+        if audience_distance_mm is not None:
+            ad_m = float(audience_distance_mm) / 1000
+            if ad_m < mvd_m:
+                recs.append(f"Audience at {ad_m:.0f} m < MVD {mvd_m:.0f} m — "
+                             f"consider finer pitch (P{pp*0.67:.1f} or P{pp*0.5:.1f})")
+            else:
+                recs.append(f"P{pp} adequate — audience {ad_m:.0f} m, MVD {mvd_m:.0f} m ✓")
+
+        if native_w % 1920 == 0 or native_h % 1080 == 0:
+            recs.append(f"Native resolution {native_w}×{native_h} is a clean {ar_str} multiple — "
+                        "no scaling artifacts from 1080p/4K content")
+        else:
+            recs.append(f"Native {native_w}×{native_h} ({ar_str}) — content will scale; "
+                        f"nearest 16:9 sizes: {(native_w//16)*16}×{(native_w//16)*9} or "
+                        f"{(native_h//9)*16}×{(native_h//9)*9}")
+
+        if total_pwr > 20000:
+            recs.append(f"Total power {total_pwr/1000:.1f} kW — plan dedicated 3-phase circuit(s)")
+        if total_kg > 500:
+            recs.append(f"Total weight {total_kg:.0f} kg — verify venue rigging capacity")
+
+        return json.dumps({
+            'pixel_pitch_mm': pp,
+            'physical': {
+                'width_mm': act_w,   'width_ft':  round(act_w/304.8, 2),
+                'height_mm': act_h,  'height_ft': round(act_h/304.8, 2),
+                'area_m2': round(area_m2, 2),
+            },
+            'panels': {
+                'wide': panels_wide, 'tall': panels_tall,
+                'total': total_panels,
+                'cabinet_mm': f'{int(pw)}×{int(ph)}',
+            },
+            'content': {
+                'native_resolution': f'{native_w}×{native_h}',
+                'aspect_ratio': ar_str,
+                'recommended_source': (
+                    '3840×2160 (4K)' if native_w >= 3840 else
+                    '1920×1080 (1080p)' if native_w >= 1920 else
+                    f'{native_w}×{native_h} (custom)'
+                ),
+            },
+            'loading': {
+                'total_weight_kg': round(total_kg, 1),
+                'total_power_w':   round(total_pwr, 0),
+                'total_power_kw':  round(total_pwr/1000, 2),
+                'kg_per_m2':       round(total_kg/area_m2, 1),
+                'w_per_m2':        power_per_m2_w,
+            },
+            'sightline': {
+                'mvd_m':          round(mvd_m, 1),
+                'mvd_ft':         round(mvd_m*3.281, 0),
+                'comfortable_viewing_m': round(mvd_m * 1.5, 1),
+            },
+            'recommendations': recs,
+        }, indent=2)
+
+    @mcp.tool(structured_output=False)
+    def av_place_led_wall(
+        ctx: Context,
+        cx: float, cy: float,
+        width_mm: float,
+        height_mm: float,
+        label: str = 'LED',
+        pixel_pitch_mm: float = 3.9,
+        panel_width_mm: float = 500,
+        panel_height_mm: float = 500,
+        plan_depth_mm: float = 300,
+        trim_mm: float = 2438,
+        support_type: str = 'flown',
+        weight_per_panel_kg: float = 8.5,
+        power_per_m2_w: float = 200,
+    ) -> str:
+        """Place an LED video wall in plan view on the AV-Video layer.
+
+        Width is snapped outward to the nearest whole panel so the wall always
+        divides into complete cabinets. Draws:
+          • Filled rectangle (LED face footprint)
+          • Vertical seam lines at every panel-width boundary
+          • Rigging point circles above (if flown/hybrid)
+          • Ground-support leg footprints below (if ground/hybrid)
+          • Spec annotation: size, pixel pitch, panel count, weight, power, MVD
+          • AV LED Wall record with full specifications
+
+        support_type: 'flown' | 'ground' | 'hybrid'
+        trim_mm: bottom-of-wall height from floor (default 2438 = 8 ft)
+
+        Common widths by format:
+          1500 mm (3×500) — small breakout / confidence
+          3000 mm (6×500) — side IMAG compact
+          4500 mm (9×500) — IMAG standard
+          6000 mm (12×500) — IMAG wide
+          9000–15000 mm    — stage backdrop"""
+        return _cmd('av_place_led_wall', {
+            'cx': cx, 'cy': cy,
+            'width_mm': width_mm, 'height_mm': height_mm,
+            'label': label, 'pixel_pitch_mm': pixel_pitch_mm,
+            'panel_width_mm': panel_width_mm,
+            'panel_height_mm': panel_height_mm,
+            'plan_depth_mm': plan_depth_mm,
+            'trim_mm': trim_mm, 'support_type': support_type,
+            'weight_per_panel_kg': weight_per_panel_kg,
+            'power_per_m2_w': power_per_m2_w,
+        })
+
+    @mcp.tool(structured_output=False)
+    def av_place_led_backdrop(
+        ctx: Context,
+        stage_width_mm: float,
+        room_length_mm: float,
+        height_mm: float = 4000,
+        pixel_pitch_mm: float = 3.9,
+        panel_width_mm: float = 500,
+        panel_height_mm: float = 500,
+        cx: float = 0,
+        overhang_mm: float = 0,
+        support_type: str = 'ground',
+        label: str = 'BACKDROP',
+    ) -> str:
+        """Place a full-width LED backdrop flush against the stage back wall.
+
+        Positions the wall at room_length_mm/2 − 150 mm (150 mm offset from wall),
+        width = stage_width_mm + 2×overhang_mm, snapped to panel multiples.
+        Defaults to ground support (most common corporate staging).
+
+        height_mm: typical range 3000–6000 mm for corporate events.
+        overhang_mm: how far each side extends beyond the stage edge (0 = flush).
+
+        For a 40-ft stage at P3.9 with 500×500 panels:
+          stage_width_mm=12192, height_mm=4000 → 24×8 panels = 192 cabinets"""
+        return _cmd('av_place_led_backdrop', {
+            'stage_width_mm': stage_width_mm, 'room_length_mm': room_length_mm,
+            'height_mm': height_mm, 'pixel_pitch_mm': pixel_pitch_mm,
+            'panel_width_mm': panel_width_mm, 'panel_height_mm': panel_height_mm,
+            'cx': cx, 'overhang_mm': overhang_mm,
+            'support_type': support_type, 'label': label,
+        })
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Generic ballroom orchestration (existing)
     # ─────────────────────────────────────────────────────────────────────────
 
